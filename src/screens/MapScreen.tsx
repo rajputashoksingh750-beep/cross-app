@@ -1,11 +1,12 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
     View, Text, StyleSheet, ScrollView, TouchableOpacity,
-    Dimensions, Animated, Switch,
+    Dimensions, Animated, Switch, ActivityIndicator
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, SPACING, RADIUS } from '../constants/theme';
 import { MOCK_MAP_PINS, MOCK_NEARBY_USERS } from '../utils/mockData';
+import { getActiveInvitesByCity } from '../utils/firebaseService';
 
 const { width } = Dimensions.get('window');
 
@@ -19,6 +20,19 @@ function getTimeLeftPin(d: Date) {
 export default function MapScreen() {
     const [nearbyNow, setNearbyNow] = useState(false);
     const [activeTab, setActiveTab] = useState<'pins' | 'nearby'>('pins');
+    const [loading, setLoading] = useState(true);
+    const [liveUsersCount, setLiveUsersCount] = useState(0);
+
+    useEffect(() => {
+        // Quick fetch to see how many people have active invites right now
+        const fetchStats = async () => {
+            setLoading(true);
+            const active = await getActiveInvitesByCity('Surat');
+            setLiveUsersCount(active.length);
+            setLoading(false);
+        };
+        fetchStats();
+    }, []);
 
     return (
         <View style={s.container}>
@@ -45,23 +59,28 @@ export default function MapScreen() {
                         <View key={i} style={s.gridCell} />
                     ))}
                 </View>
+
+                {/* Memory Pins on Map */}
                 {MOCK_MAP_PINS.map((pin, i) => (
                     <View key={pin.id} style={[s.marker, { left: 30 + i * ((width - 100) / 3), top: 30 + (i % 2 === 0 ? 20 : 80) }]}>
                         <Ionicons name="location" size={28} color={COLORS.accent} />
                         <Text style={s.markerName}>{pin.user.name}</Text>
                     </View>
                 ))}
+
+                {/* Nearby Users Bubbles (Active Invites simulated as Nearby Users for now) */}
                 {nearbyNow && MOCK_NEARBY_USERS.map((u, i) => (
                     <View key={u.id} style={[s.nearbyBubble, { left: 40 + i * ((width - 120) / 3), top: 60 + (i % 2 === 0 ? 0 : 40) }]}>
                         <Text style={{ fontSize: 20 }}>{u.avatar}</Text>
                         <Text style={s.bubbleName}>{u.name}</Text>
                     </View>
                 ))}
+
                 <View style={s.youMarker}>
                     <View style={s.youOuter}><View style={s.youInner} /></View>
                     <Text style={s.youLabel}>You</Text>
                 </View>
-                <View style={s.cityBadge}><Text style={s.cityText}>📍 Surat</Text></View>
+                <View style={s.cityBadge}><Text style={s.cityText}>📍 Surat {liveUsersCount > 0 ? `(${liveUsersCount} live)` : ''}</Text></View>
             </View>
 
             <View style={s.tabs}>
@@ -69,42 +88,48 @@ export default function MapScreen() {
                     <TouchableOpacity key={t} style={[s.tab, activeTab === t && s.tabActive]} onPress={() => setActiveTab(t)}>
                         <Ionicons name={t === 'pins' ? 'pin' : 'people'} size={16} color={activeTab === t ? COLORS.primary : COLORS.textMuted} />
                         <Text style={[s.tabText, activeTab === t && s.tabTextActive]}>
-                            {t === 'pins' ? `Memory Pins (${MOCK_MAP_PINS.length})` : `Nearby (${MOCK_NEARBY_USERS.length})`}
+                            {t === 'pins' ? `Memory Pins (${MOCK_MAP_PINS.length})` : `Nearby (${loading ? '...' : (MOCK_NEARBY_USERS.length + liveUsersCount)})`}
                         </Text>
                     </TouchableOpacity>
                 ))}
             </View>
 
             <ScrollView style={s.list} contentContainerStyle={s.listContent} showsVerticalScrollIndicator={false}>
-                {activeTab === 'pins' ? MOCK_MAP_PINS.map(pin => (
-                    <View key={pin.id} style={s.card}>
-                        <View style={s.cardHeader}>
-                            <View style={s.avatar}><Text style={{ fontSize: 20 }}>{pin.user.avatar}</Text></View>
-                            <View style={{ flex: 1 }}>
-                                <Text style={s.cardName}>{pin.user.name}</Text>
-                                <View style={s.timeRow}>
-                                    <Ionicons name="time-outline" size={11} color={COLORS.warning} />
-                                    <Text style={s.timeText}>{getTimeLeftPin(pin.expiresAt)}</Text>
+                {loading ? (
+                    <ActivityIndicator size="large" color={COLORS.primary} style={{ marginTop: 40 }} />
+                ) : activeTab === 'pins' ? (
+                    MOCK_MAP_PINS.map(pin => (
+                        <View key={pin.id} style={s.card}>
+                            <View style={s.cardHeader}>
+                                <View style={s.avatar}><Text style={{ fontSize: 20 }}>{pin.user.avatar}</Text></View>
+                                <View style={{ flex: 1 }}>
+                                    <Text style={s.cardName}>{pin.user.name}</Text>
+                                    <View style={s.timeRow}>
+                                        <Ionicons name="time-outline" size={11} color={COLORS.warning} />
+                                        <Text style={s.timeText}>{getTimeLeftPin(pin.expiresAt)}</Text>
+                                    </View>
                                 </View>
+                                {pin.hasPhoto && <View style={s.photoBadge}><Ionicons name="image" size={14} color={COLORS.primary} /></View>}
                             </View>
-                            {pin.hasPhoto && <View style={s.photoBadge}><Ionicons name="image" size={14} color={COLORS.primary} /></View>}
+                            <Text style={s.note}>{pin.note}</Text>
+                            <TouchableOpacity style={s.respondBtn} activeOpacity={0.7}>
+                                <Ionicons name="chatbubble-ellipses" size={14} color={COLORS.primary} />
+                                <Text style={s.respondText}>Respond</Text>
+                            </TouchableOpacity>
                         </View>
-                        <Text style={s.note}>{pin.note}</Text>
-                        <TouchableOpacity style={s.respondBtn} activeOpacity={0.7}>
-                            <Ionicons name="chatbubble-ellipses" size={14} color={COLORS.primary} />
-                            <Text style={s.respondText}>Respond</Text>
-                        </TouchableOpacity>
-                    </View>
-                )) : MOCK_NEARBY_USERS.map(u => (
-                    <View key={u.id} style={s.nearbyCard}>
-                        <View style={s.nearbyAvatar}><Text style={{ fontSize: 28 }}>{u.avatar}</Text></View>
-                        <View style={{ flex: 1 }}>
-                            <Text style={s.cardName}>{u.name}</Text>
-                            <Text style={s.openText}>Open to meet</Text>
+                    ))
+                ) : (
+                    MOCK_NEARBY_USERS.map(u => (
+                        <View key={u.id} style={s.nearbyCard}>
+                            <View style={s.nearbyAvatar}><Text style={{ fontSize: 28 }}>{u.avatar}</Text></View>
+                            <View style={{ flex: 1 }}>
+                                <Text style={s.cardName}>{u.name}</Text>
+                                <Text style={s.openText}>Open to meet</Text>
+                            </View>
+                            <TouchableOpacity style={s.waveBtn}><Text style={s.waveText}>👋 Wave</Text></TouchableOpacity>
                         </View>
-                        <TouchableOpacity style={s.waveBtn}><Text style={s.waveText}>👋 Wave</Text></TouchableOpacity>
-                    </View>
-                ))}
+                    ))
+                )}
             </ScrollView>
         </View>
     );
@@ -130,7 +155,7 @@ const s = StyleSheet.create({
     youOuter: { width: 24, height: 24, borderRadius: 12, backgroundColor: 'rgba(108,99,255,0.3)', justifyContent: 'center', alignItems: 'center' },
     youInner: { width: 12, height: 12, borderRadius: 6, backgroundColor: COLORS.primary },
     youLabel: { fontSize: 10, color: COLORS.primary, fontWeight: '700', marginTop: 2 },
-    cityBadge: { position: 'absolute', bottom: 10, left: 12 },
+    cityBadge: { position: 'absolute', bottom: 10, left: 12, zIndex: 10 },
     cityText: { fontSize: 13, color: COLORS.textSecondary, fontWeight: '600', backgroundColor: 'rgba(0,0,0,0.5)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: RADIUS.sm, overflow: 'hidden' },
     tabs: { flexDirection: 'row', marginHorizontal: SPACING.md, marginTop: SPACING.md, gap: 8 },
     tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 10, borderRadius: RADIUS.md, backgroundColor: COLORS.bgCard, gap: 6, borderWidth: 1, borderColor: COLORS.border },

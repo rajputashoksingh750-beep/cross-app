@@ -1,21 +1,43 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
-    View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, Dimensions,
+    View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, Dimensions, ActivityIndicator
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { Camera, CameraType, CameraRecordingOptions } from 'expo-camera';
 import { COLORS, SPACING, RADIUS, TAGS, GROUP_SIZES, WHO_CAN_JOIN } from '../constants/theme';
+import { saveInviteToFirestore, uploadVideoToStorage } from '../utils/firebaseService';
+import { MOCK_USER_PROFILE } from '../utils/mockData';
 
 const { width } = Dimensions.get('window');
 
 export default function CreateScreen() {
-    const [step, setStep] = useState(0); // 0=record, 1=tags, 2=settings
+    const [step, setStep] = useState(0); // 0=perm, 1=record, 2=tags, 3=settings
+    const [hasPermission, setHasPermission] = useState<boolean | null>(null);
     const [recording, setRecording] = useState(false);
-    const [recorded, setRecorded] = useState(false);
+    const [videoUri, setVideoUri] = useState<string | null>(null);
+
     const [selectedTags, setSelectedTags] = useState<string[]>([]);
     const [groupSize, setGroupSize] = useState(2);
     const [whoCanJoin, setWhoCanJoin] = useState('Anyone');
+
     const [timer, setTimer] = useState(0);
+    const [isUploading, setIsUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
+
+    const cameraRef = useRef<any>(null);
+    const timerInterval = useRef<any>(null);
+
+    const requestCameraPermission = async () => {
+        const { status } = await Camera.requestCameraPermissionsAsync();
+        const audioStatus = await Camera.requestMicrophonePermissionsAsync();
+        setHasPermission(status === 'granted' && audioStatus.status === 'granted');
+        if (status === 'granted' && audioStatus.status === 'granted') {
+            setStep(1);
+        } else {
+            Alert.alert('Permission Denied', 'Camera and mic access are required to post an invite.');
+        }
+    };
 
     const toggleTag = (tag: string) => {
         setSelectedTags(prev =>
@@ -23,29 +45,90 @@ export default function CreateScreen() {
         );
     };
 
-    const handleRecord = () => {
-        if (!recording && !recorded) {
-            setRecording(true);
-            let t = 0;
-            const interval = setInterval(() => {
-                t += 1;
-                setTimer(t);
-                if (t >= 35) {
-                    clearInterval(interval);
-                    setRecording(false);
-                    setRecorded(true);
+    const startRecording = async () => {
+        if (!cameraRef.current) return;
+        setRecording(true);
+        setTimer(0);
+
+        // Start max 40s timer
+        timerInterval.current = setInterval(() => {
+            setTimer(prev => {
+                if (prev >= 39) {
+                    stopRecording(); // Auto stop at 40s
+                    return 40;
                 }
-            }, 1000);
-        } else if (recording) {
-            setRecording(false);
-            setRecorded(true);
+                return prev + 1;
+            });
+        }, 1000);
+
+        try {
+            const options: CameraRecordingOptions = {
+                maxDuration: 40,
+                quality: '480p', // Keep file size small for fast uploads on Firebase free tier
+            };
+            const data = await cameraRef.current.recordAsync(options);
+            setVideoUri(data.uri);
+        } catch (error) {
+            console.error(error);
+            Alert.alert('Error', 'Failed to record video');
+            stopRecording();
         }
     };
 
-    const handlePost = () => {
-        Alert.alert('🎉 Invite Posted!', 'Your invite is now live in Surat!\nIt will expire in 2 hours.', [
-            { text: 'Awesome!', onPress: () => { setStep(0); setRecorded(false); setRecording(false); setTimer(0); setSelectedTags([]); } }
-        ]);
+    const stopRecording = () => {
+        if (!cameraRef.current) return;
+        setRecording(false);
+        clearInterval(timerInterval.current);
+        cameraRef.current.stopRecording();
+    };
+
+    const handlePost = async () => {
+        if (!videoUri) return;
+
+        setIsUploading(true);
+        try {
+            // 1. Upload video to Firebase Storage
+            const videoUrl = await uploadVideoToStorage(videoUri, (progress) => {
+                setUploadProgress(progress);
+            });
+
+            // 2. Save data to Firestore Database
+            const now = Date.now();
+            const expiresAt = now + (2 * 60 * 60 * 1000); // Expires in 2 hours
+
+            await saveInviteToFirestore({
+                userId: 'temp_user_123',
+                userName: MOCK_USER_PROFILE.name,
+                userAvatar: MOCK_USER_PROFILE.avatar,
+                location: 'Surat Central',
+                city: 'Surat',
+                tags: selectedTags,
+                whoCanJoin,
+                groupSize,
+                joinedCount: 0,
+                createdAt: now,
+                expiresAt: expiresAt,
+                videoUrl: videoUrl
+            });
+
+            Alert.alert('🎉 Invite Posted!', 'Your invite is now live in Surat!\nIt will auto-delete in 2 hours.', [
+                { text: 'Awesome!', onPress: resetForm }
+            ]);
+        } catch (error) {
+            Alert.alert('Upload Failed', 'There was an issue posting your invite.');
+            console.error(error);
+        } finally {
+            setIsUploading(false);
+        }
+    };
+
+    const resetForm = () => {
+        setStep(1);
+        setVideoUri(null);
+        setRecording(false);
+        setTimer(0);
+        setSelectedTags([]);
+        setUploadProgress(0);
     };
 
     return (
@@ -56,58 +139,79 @@ export default function CreateScreen() {
             </View>
 
             {/* Step Indicator */}
-            <View style={s.steps}>
-                {['Record', 'Tags', 'Settings'].map((label, i) => (
-                    <View key={i} style={s.stepItem}>
-                        <View style={[s.stepDot, step >= i && s.stepDotActive]}>
-                            <Text style={[s.stepNum, step >= i && s.stepNumActive]}>{i + 1}</Text>
-                        </View>
-                        <Text style={[s.stepLabel, step >= i && s.stepLabelActive]}>{label}</Text>
-                        {i < 2 && <View style={[s.stepLine, step > i && s.stepLineActive]} />}
-                    </View>
-                ))}
-            </View>
+            {step > 0 && (
+                <View style={s.steps}>
+                    {['Record', 'Tags', 'Settings'].map((label, i) => {
+                        const stepIndex = i + 1;
+                        return (
+                            <View key={i} style={s.stepItem}>
+                                <View style={[s.stepDot, step >= stepIndex && s.stepDotActive]}>
+                                    <Text style={[s.stepNum, step >= stepIndex && s.stepNumActive]}>{i + 1}</Text>
+                                </View>
+                                <Text style={[s.stepLabel, step >= stepIndex && s.stepLabelActive]}>{label}</Text>
+                                {i < 2 && <View style={[s.stepLine, step > stepIndex && s.stepLineActive]} />}
+                            </View>
+                        );
+                    })}
+                </View>
+            )}
 
             {step === 0 && (
+                <View style={s.permSection}>
+                    <Ionicons name="camera" size={64} color={COLORS.primary} />
+                    <Text style={s.permTitle}>Camera Access</Text>
+                    <Text style={s.permDesc}>We need access to your camera and microphone to record live video invites.</Text>
+                    <TouchableOpacity style={s.permBtn} onPress={requestCameraPermission}>
+                        <Text style={s.permBtnText}>Allow Access</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
+
+            {step === 1 && (
                 <View style={s.recordSection}>
                     <View style={s.cameraBox}>
-                        <LinearGradient colors={[COLORS.bgCard, COLORS.surface]} style={s.cameraPreview}>
-                            {!recorded ? (
-                                <>
-                                    <Ionicons name="videocam" size={48} color={COLORS.textMuted} />
-                                    <Text style={s.cameraHint}>{recording ? 'Recording...' : 'Tap to record your invite'}</Text>
-                                    {recording && <Text style={s.timerText}>{`0:${timer.toString().padStart(2, '0')} / 0:40`}</Text>}
-                                    {recording && (
-                                        <View style={s.timerBar}>
-                                            <View style={[s.timerFill, { width: `${(timer / 40) * 100}%` }]} />
-                                        </View>
-                                    )}
-                                </>
-                            ) : (
-                                <>
-                                    <Ionicons name="checkmark-circle" size={56} color={COLORS.success} />
-                                    <Text style={s.recordedText}>Video Recorded!</Text>
-                                    <Text style={s.recordedDuration}>{`0:${timer.toString().padStart(2, '0')}`}</Text>
-                                    <TouchableOpacity style={s.retakeBtn} onPress={() => { setRecorded(false); setTimer(0); }}>
-                                        <Ionicons name="refresh" size={16} color={COLORS.accent} />
-                                        <Text style={s.retakeText}>Retake</Text>
-                                    </TouchableOpacity>
-                                </>
-                            )}
-                        </LinearGradient>
+                        {!videoUri ? (
+                            <Camera
+                                ref={cameraRef}
+                                style={s.cameraPreview}
+                                type={CameraType.front}
+                            >
+                                {recording && (
+                                    <View style={s.recordingOverlay}>
+                                        <View style={s.recIndicator} />
+                                        <Text style={s.timerText}>{`0:${timer.toString().padStart(2, '0')}`}</Text>
+                                    </View>
+                                )}
+                            </Camera>
+                        ) : (
+                            <LinearGradient colors={[COLORS.bgCard, COLORS.surface]} style={s.cameraPreview}>
+                                <Ionicons name="checkmark-circle" size={56} color={COLORS.success} />
+                                <Text style={s.recordedText}>Video Recorded!</Text>
+                                <TouchableOpacity style={s.retakeBtn} onPress={() => setVideoUri(null)}>
+                                    <Ionicons name="refresh" size={16} color={COLORS.accent} />
+                                    <Text style={s.retakeText}>Retake</Text>
+                                </TouchableOpacity>
+                            </LinearGradient>
+                        )}
                     </View>
 
-                    <TouchableOpacity style={s.recButton} onPress={handleRecord} activeOpacity={0.7}>
-                        <View style={[s.recOuter, recording && s.recOuterActive]}>
-                            <View style={[s.recInner, recording && s.recInnerSquare]} />
-                        </View>
-                    </TouchableOpacity>
-                    <Text style={s.recHint}>{recording ? 'Tap to stop' : recorded ? 'Video ready ✓' : '30-40 seconds • Live only'}</Text>
-
-                    {recorded && (
-                        <TouchableOpacity style={s.nextBtn} onPress={() => setStep(1)} activeOpacity={0.7}>
+                    {!videoUri ? (
+                        <>
+                            <TouchableOpacity
+                                style={s.recButton}
+                                onPress={recording ? stopRecording : startRecording}
+                                activeOpacity={0.7}
+                            >
+                                <View style={[s.recOuter, recording && s.recOuterActive]}>
+                                    <View style={[s.recInner, recording && s.recInnerSquare]} />
+                                </View>
+                            </TouchableOpacity>
+                            <Text style={s.recHint}>{recording ? 'Tap to stop (max 40s)' : 'Tap to start recording'}</Text>
+                        </>
+                    ) : (
+                        <TouchableOpacity style={s.nextBtn} onPress={() => setStep(2)} activeOpacity={0.7}>
                             <LinearGradient colors={[COLORS.primary, COLORS.accent]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.nextGradient}>
-                                <Text style={s.nextText}>Next</Text>
+                                <Text style={s.nextText}>Next Step</Text>
                                 <Ionicons name="arrow-forward" size={18} color="#FFF" />
                             </LinearGradient>
                         </TouchableOpacity>
@@ -115,7 +219,7 @@ export default function CreateScreen() {
                 </View>
             )}
 
-            {step === 1 && (
+            {step === 2 && (
                 <ScrollView style={s.tagsSection} showsVerticalScrollIndicator={false}>
                     <Text style={s.sectionTitle}>Add Tags (up to 3)</Text>
                     <View style={s.tagsGrid}>
@@ -126,7 +230,7 @@ export default function CreateScreen() {
                             </TouchableOpacity>
                         ))}
                     </View>
-                    <TouchableOpacity style={s.nextBtn} onPress={() => setStep(2)} activeOpacity={0.7}>
+                    <TouchableOpacity style={s.nextBtn} onPress={() => setStep(3)} activeOpacity={0.7}>
                         <LinearGradient colors={[COLORS.primary, COLORS.accent]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.nextGradient}>
                             <Text style={s.nextText}>Next</Text>
                             <Ionicons name="arrow-forward" size={18} color="#FFF" />
@@ -135,7 +239,7 @@ export default function CreateScreen() {
                 </ScrollView>
             )}
 
-            {step === 2 && (
+            {step === 3 && (
                 <ScrollView style={s.settingsSection} contentContainerStyle={{ paddingBottom: 120 }} showsVerticalScrollIndicator={false}>
                     <Text style={s.sectionTitle}>Who can join?</Text>
                     <View style={s.optionRow}>
@@ -167,16 +271,25 @@ export default function CreateScreen() {
                         <Text style={s.summaryItem}>Expires: 2 hours</Text>
                     </View>
 
-                    <TouchableOpacity style={s.postBtn} onPress={handlePost} activeOpacity={0.7}>
+                    <TouchableOpacity style={s.postBtn} onPress={handlePost} disabled={isUploading} activeOpacity={0.7}>
                         <LinearGradient colors={[COLORS.primary, COLORS.accent]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={s.postGradient}>
-                            <Ionicons name="rocket" size={20} color="#FFF" />
-                            <Text style={s.postText}>Post Invite</Text>
+                            {isUploading ? (
+                                <>
+                                    <ActivityIndicator color="#FFF" />
+                                    <Text style={s.postText}>Uploading {Math.round(uploadProgress)}%</Text>
+                                </>
+                            ) : (
+                                <>
+                                    <Ionicons name="rocket" size={20} color="#FFF" />
+                                    <Text style={s.postText}>Post Invite</Text>
+                                </>
+                            )}
                         </LinearGradient>
                     </TouchableOpacity>
                 </ScrollView>
             )}
 
-            {step > 0 && (
+            {step > 1 && !isUploading && (
                 <TouchableOpacity style={s.backBtn} onPress={() => setStep(step - 1)}>
                     <Ionicons name="arrow-back" size={20} color={COLORS.textPrimary} />
                 </TouchableOpacity>
@@ -200,25 +313,28 @@ const s = StyleSheet.create({
     stepLabelActive: { color: COLORS.primary },
     stepLine: { width: 24, height: 2, backgroundColor: COLORS.border, marginHorizontal: 2 },
     stepLineActive: { backgroundColor: COLORS.primary },
+    permSection: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: SPACING.xl },
+    permTitle: { fontSize: 22, fontWeight: '700', color: COLORS.textPrimary, marginTop: SPACING.lg },
+    permDesc: { fontSize: 14, color: COLORS.textSecondary, textAlign: 'center', marginTop: SPACING.sm, marginBottom: SPACING.xl },
+    permBtn: { backgroundColor: COLORS.primary, paddingHorizontal: 32, paddingVertical: 14, borderRadius: 999 },
+    permBtnText: { color: '#FFF', fontSize: 16, fontWeight: '700' },
     recordSection: { flex: 1, alignItems: 'center', paddingHorizontal: SPACING.md },
-    cameraBox: { width: '100%', height: 280, borderRadius: RADIUS.lg, overflow: 'hidden', marginBottom: SPACING.lg },
-    cameraPreview: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
-    cameraHint: { fontSize: 14, color: COLORS.textSecondary, fontWeight: '500' },
-    timerText: { fontSize: 24, color: COLORS.accent, fontWeight: '800', fontVariant: ['tabular-nums'] },
-    timerBar: { width: '70%', height: 4, backgroundColor: COLORS.surface, borderRadius: 2, overflow: 'hidden' },
-    timerFill: { height: '100%', backgroundColor: COLORS.accent, borderRadius: 2 },
-    recordedText: { fontSize: 18, color: COLORS.success, fontWeight: '700' },
-    recordedDuration: { fontSize: 14, color: COLORS.textSecondary },
-    retakeBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999, backgroundColor: 'rgba(255,101,132,0.12)' },
+    cameraBox: { width: '100%', height: 400, borderRadius: RADIUS.lg, overflow: 'hidden', marginBottom: SPACING.lg, backgroundColor: COLORS.surface },
+    cameraPreview: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    recordingOverlay: { position: 'absolute', top: 20, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999, gap: 8 },
+    recIndicator: { width: 10, height: 10, borderRadius: 5, backgroundColor: COLORS.danger },
+    timerText: { fontSize: 16, color: '#FFF', fontWeight: '700', fontVariant: ['tabular-nums'] },
+    recordedText: { fontSize: 18, color: COLORS.success, fontWeight: '700', marginTop: 16 },
+    retakeBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 16, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999, backgroundColor: 'rgba(255,101,132,0.12)' },
     retakeText: { fontSize: 13, color: COLORS.accent, fontWeight: '600' },
     recButton: { marginBottom: SPACING.sm },
-    recOuter: { width: 72, height: 72, borderRadius: 36, borderWidth: 4, borderColor: COLORS.accent, justifyContent: 'center', alignItems: 'center' },
+    recOuter: { width: 76, height: 76, borderRadius: 38, borderWidth: 4, borderColor: COLORS.accent, justifyContent: 'center', alignItems: 'center' },
     recOuterActive: { borderColor: COLORS.danger },
-    recInner: { width: 52, height: 52, borderRadius: 26, backgroundColor: COLORS.accent },
+    recInner: { width: 56, height: 56, borderRadius: 28, backgroundColor: COLORS.accent },
     recInnerSquare: { borderRadius: 8, backgroundColor: COLORS.danger, width: 28, height: 28 },
-    recHint: { fontSize: 13, color: COLORS.textMuted, fontWeight: '500' },
-    nextBtn: { marginTop: SPACING.lg, borderRadius: 999, overflow: 'hidden', alignSelf: 'center' },
-    nextGradient: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 32, paddingVertical: 14, gap: 8 },
+    recHint: { fontSize: 14, color: COLORS.textMuted, fontWeight: '500' },
+    nextBtn: { marginTop: SPACING.md, borderRadius: 999, overflow: 'hidden', alignSelf: 'center' },
+    nextGradient: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 36, paddingVertical: 14, gap: 10 },
     nextText: { fontSize: 16, fontWeight: '700', color: '#FFF' },
     tagsSection: { flex: 1, paddingHorizontal: SPACING.md },
     sectionTitle: { fontSize: 16, fontWeight: '700', color: COLORS.textPrimary, marginBottom: SPACING.md, marginTop: SPACING.sm },
