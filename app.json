@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "CROSS",
+    "slug": "cross-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0A0A1A"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.cross.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "CROSS needs camera access to record invite videos",
+        "NSLocationWhenInUseUsageDescription": "CROSS needs your location to show nearby meetups in your city",
+        "NSMicrophoneUsageDescription": "CROSS needs microphone access to record invite videos"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0A0A1A",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "package": "com.cross.app",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_FINE_LOCATION",
+        "RECORD_AUDIO"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "CROSS needs camera to record invite videos"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "CROSS needs your location to show nearby meetups"
+        }
+      ]
+    ]
+  }
+}
